@@ -1,7 +1,6 @@
 # CRISPR_phasing
 Custom scripts from Santiago-Frangos et al. 2021 (Cell Reports[?])
 
-### Scripts related to:
 
 # Leader Phylogenetic Analysis
 
