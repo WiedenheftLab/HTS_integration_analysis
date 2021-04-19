@@ -1,0 +1,357 @@
+---
+title: "Methods_IHF-IR_Role_in_I-F_Integration"
+author: "Tanner Wiegand"
+date: "4/7/2020"
+output: html_document
+---
+
+This script can be adapted in the future to handle the processing of paired-end reads from Illumina MiSeq. So long as the reads were taken after ~2015, none of the Phred settings (here in Ascii 33 / same as Sanger) should need to be changed.
+
+## Start clean and Direct R to correct working directory
+This it is the directory with your compressed (.gz) FASTQ files. Note: this sets the working directory for all chunks. Each chunk will reset to this.
+
+## Run This  First##
+  # Set path to working directory (path to folder containing: High-Throughput_Sequencing_Data/)
+    # Note: You may get errors about resetting this later on, ignore them
+
+setwd("High-Throughput_Sequencing_Data/FASTQ_Files")
+
+##                ##
+
+```{r setup, include=FALSE}
+library(knitr)
+library(ShortRead)
+knitr::opts_chunk$set(echo = TRUE)
+
+# Set path to working directory (path to folder containing: High-Throughput_Sequencing_Data/)
+  # Note: You may get errors about resetting this later on, ignore them
+knitr::opts_knit$set(root.dir = 'High-Throughput_Sequencing_Data/FASTQ_Files')
+
+# Clear saved variables
+rm(list=ls())
+```
+
+
+## Merging [PEAR]
+Run PEAR (Paired-End reAd mergeR) to merge paired-end reads and concatenate phred scores [Base Phred = 33 ascii, by default]. Reads were pre-matched by Illumina bcl2fastq program (i.e. sequence one in ...R1... pairs with sequence one in ...R2... file).
+Note: R1 in file name = Forward reads
+      R2 in file name = Reverse reads
+
+Example PEAR command in terminal:
+"/Users/tannerwiegand/Bioinformatics/PEAR/PEAR-master/src/pear -f TW1_S1_L001_R1_001.fastq -r TW1_S1_L001_R2_001.fastq -o BC1"
+
+```{r pear, echo=FALSE}
+
+pear <- "/PEAR/PEAR-master/src/pear" ## Specify hard path to PEAR executable 
+
+for (i in c(1:6,9)) {
+  system(paste0("gunzip -k TW", i, "_S", i, "_L001_R1_001.fastq.gz")) #Unzip HTS FASTQ files
+  system(paste0("gunzip -k TW", i, "_S", i, "_L001_R2_001.fastq.gz"))
+  system(paste0(pear," -f TW", i, "_S", i, "_L001_R1_001.fastq -r TW", i, "_S", i, "_L001_R2_001.fastq -o BC", i)) #PEAR
+  system(paste0("rm TW", i, "_S", i, "_L001_R1_001.fastq")) #Removed unzipped HTS FASTQ files
+  system(paste0("rm TW", i, "_S", i, "_L001_R2_001.fastq"))
+}
+
+```
+
+
+## New Directories for PEAR Output
+
+```{r pear dir}
+
+dir.create("Assembled_from_Paired-Ends")
+dir.create("Unassembled_Forward")
+dir.create("Unassembled_Reverse")
+dir.create("Unassembled_Discarded")
+
+```
+
+
+## Move PEAR Outputs into new directories
+Additionally: compress files that you won't need and delete the uncompressed versions
+
+```{r mvpear, echo = FALSE}
+
+for (i in c(1:6,9)) {
+#Move reads that we'll use for downstream analysis
+ system(paste0("mv BC", i, ".assembled.fastq Assembled_from_Paired-Ends/BC", i, ".assembled.fastq")) 
+ 
+#Compress and move reads that we won't need
+ system(paste0("gzip BC", i, ".unassembled.forward.fastq"))
+ system(paste0("mv BC", i, ".unassembled.forward.fastq.gz Unassembled_Forward/BC", i, ".unassembled.forward.fastq.gz"))
+ system(paste0("gzip BC", i, ".unassembled.reverse.fastq"))
+ system(paste0("mv BC", i, ".unassembled.reverse.fastq.gz Unassembled_Reverse/BC", i, ".unassembled.reverse.fastq.gz"))
+ system(paste0("gzip BC", i, ".discarded.fastq"))
+ system(paste0("mv BC", i, ".discarded.fastq.gz Unassembled_Discarded/BC", i, ".discarded.fastq.gz"))
+}
+
+```
+
+
+### Filtering [FASTX-toolkit]
+Filter reads that are above a certain perentage of low quality positions and add them to a new folder
+
+# Note: There is a step in this chunk of code that must be executed manually from command line
+
+```{r fastx}
+
+## Set values 
+phred <- 20 # Minimum phred score
+perc <- 90 # At least this percent of positions in each read
+
+# Make temporary values
+fastx <- "/fastx_toolkit/" # Specify hard path to FASTX_Toolkit executable
+cmd <- paste0(fastx, "fastq_quality_filter -q ", phred, " -p ", perc, " -Q33 -i ") #'-Q33' option specifies phread base ascii-33
+
+# Reset working directory (ignore errors)
+setwd("./Assembled_from_Paired-Ends")
+dir.create("Filtered")
+
+
+for (i in c(1:6,9)){
+
+ # Set temporary values for input/output filenames 
+  f.in <- paste0("./BC", i, ".assembled.fastq")
+  f.out <- paste0("./Filtered/BC", i, ".assembled.filtered.90.fastq")
+  
+ # Run Quality filter and compress old files
+  #y <- paste0(cmd, f.in, " -o ", f.out) 
+  paste0(cmd, f.in, " -o ", f.out) #Filter - NOT WORKING: must do this step in terminal/command line to get this step done
+  x <- paste0("gzip ", f.in) #Compress
+  #system(y)
+  system(x)
+  rm(f.in) ; rm(f.out) ; rm(x) #; rm(y)
+} 
+
+```
+
+## Compress All Newly Created Reads
+These reads can be imported into R as a .gz file for the next step, and this will save storage space.
+
+```{r}
+
+# Reset working directory (ignore errors)
+setwd("./Assembled_from_Paired-Ends/Filtered")
+
+for (i in c(1:6,9)){
+
+  system(paste0("gzip BC", i, ".assembled.filtered.90.fastq")) # Compress
+
+}
+```
+
+
+##Masking Residues with Less than Phred = XX (pulled from above) and Convert to FASTA
+Adapted from code written by: Anna Shiriaeva (Severinov Lab)
+
+```{r masking}
+
+# Reset working directory (ignore errors)
+setwd("./Assembled_from_Paired-Ends/Filtered") 
+dir.create("Masked")
+
+for (a in c(1:6,9)){
+  fasta<-c()
+  name_1<-"BC"
+  name_2<-as.character(a)
+  name_3<-".assembled.filtered.90.fastq.gz"
+  
+  name<-paste(name_1, name_2, name_3, sep="")
+  
+  Reads_initial<-readFastq(name) ##insert the name of your fastq file with adaptation data
+  
+  ####here we will analyze quality of reads. If Phred quality score is less than qualityCutoff then we will exchange it with N
+  ###The script is working correctly only if all reads have the same length. So I divide reads by length and analyze each group separately in for loop
+  ###If there are too many reads, some laptops don't have enough RAM, so I also have to divide reads into smaller groups (I keep 300000 in the following script)
+  
+  
+  width<-as.numeric(width(Reads_initial))
+  stat<-as.data.frame(table(width))
+  levels<-levels(stat$width)
+  
+  reads_R1<-Reads_initial[1]
+  qualityCutoff <- phred # 
+  seq_R1 <- sread(reads_R1) # get sequence list
+  qual <- PhredQuality(quality(quality(reads_R1))) # get quality score list as PhredQuality
+  myqual_mat <- matrix(charToRaw(as.character(unlist(qual))), nrow=length(qual), byrow=TRUE) # convert quality score to matrix
+  
+  at <- myqual_mat < charToRaw(as.character(PhredQuality(as.integer(qualityCutoff)))) # find positions of low quality
+  letter_subject <- DNAString(paste(rep.int("N", width(seq_R1)[1]), collapse="")) # create a matrix of Ns
+  letter <- as(Views(letter_subject, start=1, end=rowSums(at)), "DNAStringSet") # length needed for each read
+  seq_R1 <- replaceLetterAt(seq_R1, at, letter) # inject Ns at low quality positions
+  
+  
+  M1_R1<-seq_R1
+  
+  for (i in nrow(stat):1) {
+    reads<-Reads_initial[width(Reads_initial) == levels[i]]
+    l<-length(reads)
+    if (l<=300000) {
+      reads_R1<-reads
+      width<-width(reads_R1)
+      seq_R1 <- sread(reads_R1) # get sequence list
+      qual <- PhredQuality(quality(quality(reads_R1))) # get quality score list as PhredQuality
+      myqual_mat <- matrix(charToRaw(as.character(unlist(qual))), nrow=length(qual), byrow=TRUE) # convert quality score to matrix
+      
+      at <- myqual_mat < charToRaw(as.character(PhredQuality(as.integer(qualityCutoff)))) # find positions of low quality
+      letter_subject <- DNAString(paste(rep.int("N", width(seq_R1)[1]), collapse="")) # create a matrix of Ns
+      letter <- as(Views(letter_subject, start=1, end=rowSums(at)), "DNAStringSet") # length needed for each read
+      seq_R <- replaceLetterAt(seq_R1, at, letter) # inject Ns at low quality positions
+      
+      M1_R1<-append(M1_R1, seq_R)}
+    else {
+      whole<-l%/%300000
+      rest<-l%%300000
+      
+      for (b in 1:(whole+1)) {
+        if (b<(whole+1)) {
+          reads_R1<-reads[(b*300000-299999):(b*300000)]
+          
+          seq_R1 <- sread(reads_R1) # get sequence list
+          qual <- PhredQuality(quality(quality(reads_R1))) # get quality score list as PhredQuality
+          myqual_mat <- matrix(charToRaw(as.character(unlist(qual))), nrow=length(qual), byrow=TRUE) # convert quality score to matrix
+          at <- myqual_mat < charToRaw(as.character(PhredQuality(as.integer(qualityCutoff)))) # find positions of low quality
+          letter_subject <- DNAString(paste(rep.int("N", width(seq_R1)[1]), collapse="")) # create a matrix of Ns
+          letter <- as(Views(letter_subject, start=1, end=rowSums(at)), "DNAStringSet") # length needed for each read
+          seq_R <- replaceLetterAt(seq_R1, at, letter) # inject Ns at low quality positions
+          
+          M1_R1<-append(M1_R1, seq_R)}
+        else {
+          reads_R1<-reads[(b*300000-299999):length(reads)]
+          seq_R1 <- sread(reads_R1) # get sequence list
+          qual <- PhredQuality(quality(quality(reads_R1))) # get quality score list as PhredQuality
+          myqual_mat <- matrix(charToRaw(as.character(unlist(qual))), nrow=length(qual), byrow=TRUE) # convert quality score to matrix
+          at <- myqual_mat < charToRaw(as.character(PhredQuality(as.integer(qualityCutoff)))) # find positions of low quality
+          letter_subject <- DNAString(paste(rep.int("N", width(seq_R1)[1]), collapse="")) # create a matrix of Ns
+          letter <- as(Views(letter_subject, start=1, end=rowSums(at)), "DNAStringSet") # length needed for each read
+          seq_R <- replaceLetterAt(seq_R1, at, letter) # inject Ns at low quality positions
+          
+          M1_R1<-append(M1_R1, seq_R)
+        }
+        
+      }
+    }
+    
+  }
+  
+  M1<-M1_R1[-1]
+  fasta<-append(fasta, M1)
+  
+  length(fasta) #how many reads with the barcode
+  
+  writeFasta(fasta, paste0("./Masked/BC",name_2,".masked.fna")) #here is your file with read sequences, low quality positions are substituted with N
+  
+  
+}
+
+rm(fasta) ; rm(M1)
+```
+
+
+## Add names to each newly created Masked FASTA file 
+
+```{r}
+for (i in c(1:6,9)){
+  
+  f.in <- paste0("./Assembled_from_Paired-Ends/Filtered/Masked/BC", i,".masked.fna")
+  x <- readDNAStringSet(f.in)
+  names(x) <- seq(1, length(x))
+  writeFasta(x, f.in)
+  
+}
+```
+
+
+## Make Blast databases for each CRIPSR Substrate
+
+```{r}
+
+# Reset working directory (ignore errors)
+setwd("../Fasta_files/CRISPRs/")
+
+crispr.list <- c("WT", "minus5d", "plus5d", "plus10d", "plus10d10u", "delM", "WT-noIHF")
+suffix <- ".fna"
+namez <- paste0(crispr.list, suffix)
+commandz <- paste0("makeblastdb -in ", namez, " -dbtype nucl")
+
+for (i in seq(1:length(crispr.list))){
+  system(paste0(commandz[i]))
+}
+
+```
+
+
+## Blast each set of reads against its respective substrate
+
+```{r}
+
+# Reset working directory (ignore errors)
+setwd("High-Throughput_Sequencing_Data/")
+
+# Make directories for blast results
+dir.create("Blast-results")
+dir.create("Blast-results/CRISPRs")
+dir.create("Blast-results/Int_Substrate")
+
+# Store path information as variables to make following steps easier
+db1.prefix <- "Fasta_Files/CRISPRs/"
+db2.path <- "Fasta_Files/Int_Substrate/Int_Substrate.fna "
+blast.suffix <- "-outfmt '6 qseqid qlen qstart qend sstart send sstrand evalue length pident nident mismatch gaps' >"
+
+### Blast reads against CRISPR and Integrated prespacer substrate
+# Barcode 1 (BC1)
+system(paste0("blastn -query Fasta_Files/BC1.masked.fna -db ", db1.prefix, "WT.fna ", blast.suffix, 
+       " Blast-results/CRISPRs/BC1.masked.txt"))
+system(paste0("blastn -query Fasta_Files/BC1.masked.fna -db ", db2.path, blast.suffix, 
+       " Blast-results/Int_Substrate/BC1.masked.int.txt"))
+
+# Barcode 2 (BC2)
+system(paste0("blastn -query Fasta_Files/BC2.masked.fna -db ", db1.prefix, "minus5d.fna ", blast.suffix, 
+       " Blast-results/CRISPRs/BC2.masked.txt"))
+system(paste0("blastn -query Fasta_Files/BC2.masked.fna -db ", db2.path, blast.suffix, 
+       " Blast-results/Int_Substrate/BC2.masked.int.txt"))
+
+# Barcode 3 (BC3)
+system(paste0("blastn -query Fasta_Files/BC3.masked.fna -db ", db1.prefix, "plus5d.fna ", blast.suffix, 
+       " Blast-results/CRISPRs/BC3.masked.txt"))
+system(paste0("blastn -query Fasta_Files/BC3.masked.fna -db ", db2.path, blast.suffix, 
+       " Blast-results/Int_Substrate/BC3.masked.int.txt"))
+
+# Barcode 4 (BC4)
+system(paste0("blastn -query Fasta_Files/BC4.masked.fna -db ", db1.prefix, "plus10d.fna ", blast.suffix, 
+       " Blast-results/CRISPRs/BC4.masked.txt"))
+system(paste0("blastn -query Fasta_Files/BC4.masked.fna -db ", db2.path, blast.suffix, 
+       " Blast-results/Int_Substrate/BC4.masked.int.txt"))
+
+
+# Barcode 5 (BC5)
+system(paste0("blastn -query Fasta_Files/BC5.masked.fna -db ", db1.prefix, "plus10d10u.fna ", blast.suffix, " Blast-results/CRISPRs/BC5.masked.txt"))
+system(paste0("blastn -query Fasta_Files/BC5.masked.fna -db ", db2.path, blast.suffix, 
+       " Blast-results/Int_Substrate/BC5.masked.int.txt"))
+
+# Barcode 6 (BC6)
+system(paste0("blastn -query Fasta_Files/BC6.masked.fna -db ", db1.prefix, "delM.fna ", blast.suffix, " Blast-results/CRISPRs/BC6.masked.txt"))
+system(paste0("blastn -query Fasta_Files/BC6.masked.fna -db ", db2.path, blast.suffix, 
+       " Blast-results/Int_Substrate/BC6.masked.int.txt"))
+
+
+# Barcode 7 (BC7)
+system(paste0("blastn -query Fasta_Files/BC7.masked.fna -db ", db1.prefix, "WT-noIHF.fna ", blast.suffix, " Blast-results/CRISPRs/BC7.masked.txt"))
+system(paste0("blastn -query Fasta_Files/BC7.masked.fna -db ", db2.path, blast.suffix, 
+       " Blast-results/Int_Substrate/BC7.masked.int.txt"))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
