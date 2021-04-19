@@ -7,4 +7,4 @@ Custom scripts from Santiago-Frangos et al. 2021 (Cell Reports[?])
 
 
 # High-Throughput Sequencing of in vitro integration products
-Data and custom R-scripts used for analsis of HTS data can be found in the folder 'High-Throughput_Sequencing_Data/'
+Data and custom R-scripts used for analysis of HTS data can be found in the folder 'High-Throughput_Sequencing_Data/'
